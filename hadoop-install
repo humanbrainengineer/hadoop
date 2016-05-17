@@ -1,0 +1,388 @@
+Hadoop集群安装配置教程
+
+严重提示：
+这里注意所有的主机名需要规范设置。不能用下划线来做分隔符，只能用减号。
+同时不能在配置文件里面使用ip地址。而要使用主机名。
+
+我在安装过程中就是因为这2个原因。导致集群无法正确建立。hdfs dfsadmin -report ，无法显示正确信息
+
+ 准备阶段
+3台模拟机，安装好CentOS7 的系统
+IP	主机名	用户名	密码
+192.168.1.151                              	hadoop-master-001                    	hadoop                  	 
+192.168.1.152	hadoop-slave-001	hadoop	 
+192.168.1.153	hadoop-slave-002	hadoop	 
+增加用户
+
+useradd hadoop
+passwd hadoop
+
+
+禁用 Transparent Hugepage
+查看Transparent Hugepage 的状态
+cat /sys/kernel/mm/transparent_hugepage/enabled
+返回 结果 
+[always] madvise never
+永久关闭
+vim /etc/rc.local
+加入如下代码:
+if test -f /sys/kernel/mm/transparent_hugepage/enabled; then
+   echo never > /sys/kernel/mm/transparent_hugepage/enabled
+fi
+if test -f /sys/kernel/mm/transparent_hugepage/defrag; then
+   echo never > /sys/kernel/mm/transparent_hugepage/defrag
+fi
+重启机器
+查看状态
+cat /sys/kernel/mm/transparent_hugepage/enabled
+返回结果
+always madvise [never]
+
+
+
+系统软件安装
+java 安装
+安装oracle的java sdk
+
+下载链接 : http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html
+wget  http://download.oracle.com/otn-pub/java/jdk/8u72-b15/jdk-8u72-linux-x64.rpm?AuthParam=1453706601_fb0540fefe22922be611d401fbbf4d75
+
+下载到本地以后，通过yum 进行安装
+yum localinstall jdk-8u72-linux-x64.rpm 
+
+验证java 版本
+java --version
+
+设置JAVA_HOME环境变量
+vim  /etc/profile
+export JAVA_HOME="/usr/java/default"
+
+在master 和 slave的服务器上都设置 hosts
+
+192.168.1.151   hadoop-master-001
+192.168.1.152   hadoop-slave-001
+192.168.1.153   hadoop-slave-002
+
+打通001到001, 002,003的SSH无密码登陆
+安装ssh
+在001 的机器上进入 hdfs 用户 的 .ssh 目录
+ 使用 ssh-keygen -t rsa  来生成公钥和私钥(连续回车，不设置密码)
+把公钥文件复制到要访问的机器的hdfs的用户目录下的.ssh 目录
+ scp ~/.ssh/id_rsa.pub hadoop@hadoop-master-001:/home/hadoop/.ssh/authorized_keys
+ scp ~/.ssh/id_rsa.pub hadoop@hadoop-slave-001:/home/hadoop/.ssh/authorized_keys
+ scp ~/.ssh/id_rsa.pub hadoop@hadoop-slave-001:/home/hadoop/.ssh/authorized_keys
+检测是否可以不需要密码登陆
+ssh localhost
+ssh hadoop@hadoop-master-001
+ssh hadoop@hadoop-slave-001
+ssh hadoop@hadoop-slave-001
+这里只有001是master，如果有多个namenode，或者rm的话则需要打通所有master到其他剩余节点的免密码登陆。（将001的authorized_keys追加到002和003的authorized_keys）
+
+注意：在centos7 下面 要打通本地 ssh localhost 的免密码登陆的过程，如果使用网上的 
+cat ./id_rsa.pub >> ./authorized_keys  这种方法，是无法免密码的。什么原因未知。 现在采用
+scp ~/.ssh/id_rsa.pub hdfs@hadoop-master-001:/home/hdfs/.ssh/authorized_keys
+这种方式来完成本机免密码ssh
+hadoop的安装
+hadoop 下载http://hadoop.apache.org/releases.html  。 下载页面 访问  http://apache.fayea.com/hadoop/common/ 
+wget  http://apache.fayea.com/hadoop/common/hadoop-2.7.2/hadoop-2.7.2.tar.gz
+tar -xzvf hadoop-2.7.2.tar.gz
+把hadoop-2.7.2 移动到 /usr/local目录下
+sudo cd /usr/local
+sudo tar -xzvf hadoop-2.7.2.tar.gz
+sudo chown -R hadoop:hadoop ./hadoop-2.7.2
+ln -s /usr/local/hadoop-2.7.2  /usr/local/hadoop
+判断hadoop的版本
+/usr/local/hadoop/bin/hadoop version
+配置环境变量
+
+vim /etc/profile
+
+export PATH=$PATH:/usr/local/hadoop/bin:/usr/local/hadoop/sbin
+
+hadoop配置过程
+配置之前，需要在001本地文件系统创建以下文件夹：
+
+/home/hadoop/name
+
+/home/hadoop/data
+
+/home/hadoop/temp
+
+
+这里要涉及到的配置文件有7个：
+
+~/hadoop-2.7.2/etc/hadoop/hadoop-env.sh
+
+~/hadoop-2.7.2/etc/hadoop/yarn-env.sh
+
+~/hadoop-2.7.2/etc/hadoop/slaves
+
+~/hadoop-2.7.2/etc/hadoop/core-site.xml
+
+~/hadoop-2.7.2/etc/hadoop/hdfs-site.xml
+
+~/hadoop-2.7.2/etc/hadoop/mapred-site.xml
+
+~/hadoop-2.7.2/etc/hadoop/yarn-site.xml
+
+
+修改配置（如何系统已经设置了JAVA_HOME,也要配置env.sh）
+在192.168.1.151 服务器上进入 /home/hdfs/hadoop-2.7.2/etc/hadoop
+配置文件1：hadoop-env.sh
+
+修改JAVA_HOME值（export JAVA_HOME=/usr/java/default）
+
+配置文件2：yarn-env.sh
+
+修改JAVA_HOME值（export JAVA_HOME=/usr/java/default）
+
+配置文件3：slaves （这个文件里面保存所有slave节点）
+
+写入以下内容：
+hadoop-slave-001
+hadoop-slave-002
+
+配置文件4：core-site.xml
+<configuration>
+        <property>
+                <name>fs.defaultFS</name>
+                <value>hdfs://hadoop-master-001:9000</value>
+        </property>
+        <property>
+                <name>hadoop.tmp.dir</name>
+                <value>file:/home/hadoop/temp</value>
+                <description>Abase for other temporary directories.</description>
+        </property>
+</configuration>
+
+
+配置文件5：hdfs-site.xml
+
+
+<configuration>
+         <property>
+               <name>dfs.namenode.secondary.http-address</name>
+               <value>hadoop-master-001:9001</value>
+         </property>
+         <property>
+                 <name>dfs.namenode.name.dir</name>
+                 <value>file:/home/hadoop/name</value>
+         </property>
+         <property>
+                 <name>dfs.datanode.data.dir</name>
+                 <value>file:/home/hadoop/data</value>
+         </property>
+         <property>
+                 <name>dfs.replication</name>
+                 <value>3</value>
+         </property>
+         <property>
+                 <name>dfs.webhdfs.enabled</name>
+                 <value>true</value>
+         </property>
+</configuration>
+
+
+配置文件6：mapred-site.xml
+
+
+<configuration>
+                <property>
+                         <name>mapreduce.framework.name</name>
+                         <value>yarn</value>
+                </property>
+                <property>
+                         <name>mapreduce.jobhistory.address</name>
+                         <value>hadoop_master_001:10020</value>
+                </property>
+                <property>
+                         <name>mapreduce.jobhistory.webapp.address</name>
+                         <value>hadoop_master_001:19888</value>
+                </property>
+</configuration>
+配置文件7：yarn-site.xml
+
+<configuration>
+        <property>
+               <name>yarn.nodemanager.aux-services</name>
+               <value>mapreduce_shuffle</value>
+        </property>
+        <property>
+               <name>yarn.nodemanager.aux-services.mapreduce.shuffle.class</name>
+               <value>org.apache.hadoop.mapred.ShuffleHandler</value>
+        </property>
+        <property>
+               <name>yarn.resourcemanager.address</name>
+               <value>hadoop_master_001:8032</value>
+       </property>
+       <property>
+               <name>yarn.resourcemanager.scheduler.address</name>
+               <value>hadoop_master_001:8030</value>
+       </property>
+       <property>
+               <name>yarn.resourcemanager.resource-tracker.address</name>
+               <value>hadoop_master_001:8031</value>
+       </property>
+       <property>
+               <name>yarn.resourcemanager.admin.address</name>
+               <value>hadoop_master_001:8033</value>
+       </property>
+       <property>
+               <name>yarn.resourcemanager.webapp.address</name>
+               <value>hadoop_master_001:8088</value>
+       </property>
+</configuration>
+
+
+
+复制到hadoop 到其他节点
+scp -r /usr/local/hadoop hadoop@hadoop-slave-001:/usr/local/hadoop-2.7.2
+scp -r /usr/local/hadoop hadoop@hadoop-slave-002:/usr/local/hadoop-2.7.2
+启动hadoop
+进入安装目录： cd  /usr/local/hadoop
+格式化namenode：./bin/hdfs namenode  -format (format前面只有一个减号)成功的话，会看到 “successfully formatted” 和 “Exitting with status 0″ 的提示，若为 “Exitting with status 1″ 则是出错。
+启动hdfs: ./sbin/start-dfs.sh
+001上面运行的进程有：NameNode  SecondaryNameNode
+
+002和003上面运行的进程有：DataNode
+
+启动yarn: ./sbin/start-yarn.sh
+
+YARN 是从 MapReduce 中分离出来的，负责资源管理与任务调度。YARN 运行于 MapReduce 之上，提供了高可用性、高扩展性
+
+001上面运行的进程有：NameNode  SecondaryNameNode ResourceManager
+002和003上面运行的进程有：DataNode NodeManager
+
+启动完成后，可以通过命令 jps 来判断是否成功启动，若成功启动则会列出如下进程: “NameNode”、”DataNode” 和 “SecondaryNameNode”
+
+检测运行事例
+查看集群状态：./bin/hdfs dfsadmin -report
+出现 
+Live datanodes (2):
+
+这个信息才表示集群建立成功
+成功启动后，可以访问 Web 界面 http://192.168.1.151:50070 查看 NameNode 和 Datanode 信息，还可以在线查看 HDFS 中的文件。
+启动 YARN 可以通过 Web 界面查看任务的运行情况：http://192.168.1.151:8088/cluster
+操作hdfs 的命令
+
+hadoop fs
+
+这个命令可以列出所有的 hdfs的子命令的帮助界面。基本上语法和linux上的文件操作类似
+
+例如 : 复制本地文件到 hdfs 系统 
+
+hadoop fs -copyFromLocal *.log hdfs://192.168.1.151:9000/data/weblogs
+
+命令详解，官方文档
+https://hadoop.apache.org/docs/r1.0.4/cn/hdfs_shell.html
+
+安装 Hadoop Ambari 2.2.0
+官方安装文档 2.2.0
+https://cwiki.apache.org/confluence/display/AMBARI/Install+Ambari+2.2.0+from+Public+Repositories
+主机准备
+主机名	IP地址
+hadoop-ambari	192.168.1.150
+ 	 
+更新 yum的仓库
+yum update
+cd /etc/yum.repos.d/
+wget http://public-repo-1.hortonworks.com/ambari/centos7/2.x/updates/2.2.0.0/ambari.repo
+安装自己的jdk 环境
+yum localinstall jdk-8u72-linux-x64.rpm 
+配置JAVA_HOME环境变量
+vim  /etc/profile
+export JAVA_HOME="/usr/java/default"
+安装 Ambari 
+yum install ambari-server
+ambari-server setup
+(在配置的过程中选择自己安装的jdk环境)
+启动服务
+ambari-server start
+访问服务
+http://192.168.1.150:8080 （缺省用户名和密码 是 : admin / admin）
+MapReduce 的程序开发
+在maven的pom.xml文件里面配置hadoop的构建
+
+    <!-- hadoop的配置 -->
+    <dependency>
+		<groupId>org.apache.hadoop</groupId>
+		<artifactId>hadoop-mapreduce-client-core</artifactId>
+		<scope>provided</scope>
+		<version>2.7.2</version>
+	</dependency>
+	<dependency>
+		<groupId>org.apache.hadoop</groupId>
+		<artifactId>hadoop-mapreduce-client-common</artifactId>
+		<scope>provided</scope>
+		<version>2.7.2</version>
+	</dependency>
+    <dependency>
+		<groupId>org.apache.hadoop</groupId>
+		<artifactId>hadoop-common</artifactId>
+		<scope>provided</scope>
+		<version>2.7.2</version>
+	</dependency>
+	<dependency>
+		<groupId>org.apache.hadoop</groupId>
+		<artifactId>hadoop-yarn-common</artifactId>
+		<scope>provided</scope>
+		<version>2.7.2</version>
+	</dependency>
+		<dependency>
+		<groupId>org.apache.hadoop</groupId>
+		<artifactId>hadoop-annotations</artifactId>
+		<scope>provided</scope>
+		<version>2.7.2</version>
+	</dependency>
+	<!-- 配置结束 -->
+
+
+
+在java的开发环境中下载hadoop集群环境中的配置文件,保存到config目录下
+core-site.xml
+<configuration>
+	<property>
+		<name>fs.defaultFS</name>
+		<value>hdfs://hadoop-master-001:9000</value>
+	</property>
+	
+    <property>
+		<name>io.file.buffer.size</name>
+		<value>131072</value>
+	</property>
+	<property>
+		<name>hadoop.tmp.dir</name>
+		<value>file:/home/hadoop/temp</value>
+		<description>Abase for other temporary directories.</description>
+	</property>
+	<property>
+		<name>hadoop.proxyuser.hduser.hosts</name>
+		<value>*</value>
+	</property>
+	<property>
+		<name>hadoop.proxyuser.hduser.groups</name>
+		<value>*</value>
+	</property>
+</configuration>
+hdfs-site.xml
+<configuration>
+	<property>
+		<name>dfs.datanode.data.dir</name>
+		<value>file:/home/hadoop/data</value>
+	</property>
+	<property>
+		<name>dfs.replication</name>
+		<value>3</value>
+	</property>
+</configuration>
+mapred-site.xml
+<configuration>
+	<property>
+		<name>mapred.job.tracker</name>
+		<value>hdfs://hadoop-master-001:9001</value>
+	</property>
+</configuration>
+
+
+配置本地的hosts文件，定义 192.168.1.151   hadoop-master-001
+
