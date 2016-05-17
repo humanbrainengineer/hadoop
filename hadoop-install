@@ -386,3 +386,6 @@ mapred-site.xml
 
 配置本地的hosts文件，定义 192.168.1.151   hadoop-master-001
 
+
+
+
